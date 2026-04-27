@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write  # needed to create GitHub Releases
+  id-token: write  # needed for npm provenance
+
+jobs:
+  test:
+    name: Test before release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm run test:coverage
+
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: test
+    environment: npm-publish
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Derive version and tag from git tag
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME}"           # e.g. v0.2.1
+          VERSION="${TAG#v}"                 # e.g. 0.2.1
+          # Determine dist-tag: pre-release tags (e.g. v1.0.0-beta.1) go to "next"
+          if [[ "$VERSION" == *"-"* ]]; then
+            DIST_TAG="next"
+          else
+            DIST_TAG="latest"
+          fi
+          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
+          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Sync package.json version with git tag
+        run: npm version "${{ steps.meta.outputs.version }}" --no-git-tag-version
+
+      - name: Publish
+        run: npm publish --tag "${{ steps.meta.outputs.dist_tag }}" --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so we can diff against previous tag
+          # Use a PAT so the CHANGELOG commit triggers CI on main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build changelog entry
+        id: changelog
+        run: |
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          VERSION="${CURRENT_TAG#v}"
+          TODAY=$(date -u +"%Y-%m-%d")
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -n 1)
+
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s (%h)" HEAD)
+          else
+            COMMITS=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD")
+          fi
+
+          REPO="${{ github.repository }}"
+          COMPARE_URL=""
+          if [ -n "$PREV_TAG" ]; then
+            COMPARE_URL="https://github.com/${REPO}/compare/${PREV_TAG}...${CURRENT_TAG}"
+          fi
+
+          # Build the new CHANGELOG section
+          {
+            echo "entry<<ENTRY_EOF"
+            echo "## [${VERSION}] - ${TODAY}"
+            echo ""
+            echo "### Changes"
+            echo ""
+            echo "$COMMITS"
+            if [ -n "$COMPARE_URL" ]; then
+              echo ""
+              echo "[${VERSION}]: ${COMPARE_URL}"
+            else
+              echo ""
+              echo "[${VERSION}]: https://github.com/${REPO}/releases/tag/${CURRENT_TAG}"
+            fi
+            echo "ENTRY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          # Also write the GitHub Release body (same content, nicer header)
+          {
+            echo "body<<BODY_EOF"
+            echo "## What's changed"
+            echo ""
+            echo "$COMMITS"
+            if [ -n "$COMPARE_URL" ]; then
+              echo ""
+              echo "**Full diff:** $COMPARE_URL"
+            fi
+            echo "BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "version=$VERSION"     >> "$GITHUB_OUTPUT"
+          echo "current_tag=$CURRENT_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Prepend entry to CHANGELOG.md
+        run: |
+          ENTRY="${{ steps.changelog.outputs.entry }}"
+          # Insert the new entry after the first "---" separator line
+          awk -v entry="$ENTRY" '
+            /^---$/ && !done {
+              print
+              print ""
+              print entry
+              done=1
+              next
+            }
+            { print }
+          ' CHANGELOG.md > CHANGELOG.tmp && mv CHANGELOG.tmp CHANGELOG.md
+
+      - name: Commit and push CHANGELOG.md to main
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          git add CHANGELOG.md
+          git diff --cached --quiet || git commit -m "chore(release): update CHANGELOG for ${{ steps.changelog.outputs.current_tag }}"
+          git push origin main
+
+      - name: Create GitHub Release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag        = context.ref.replace('refs/tags/', '');
+            const body       = `${{ steps.changelog.outputs.body }}`;
+            const isPrerelease = tag.includes('-');
+
+            await github.rest.repos.createRelease({
+              owner:      context.repo.owner,
+              repo:       context.repo.repo,
+              tag_name:   tag,
+              name:       tag,
+              body:       body,
+              prerelease: isPrerelease,
+              draft:      false,
+            });
