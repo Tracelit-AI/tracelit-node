@@ -37,7 +37,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "llm_prompt.txt"
   ],
   "sideEffects": false,
   "engines": {

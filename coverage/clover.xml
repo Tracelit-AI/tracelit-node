@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<coverage generated="1777184303072" clover="3.2.0">
-  <project timestamp="1777184303072" name="All files">
+<coverage generated="1777292855866" clover="3.2.0">
+  <project timestamp="1777292855866" name="All files">
     <metrics statements="255" coveredstatements="241" conditionals="112" coveredconditionals="90" methods="48" coveredmethods="45" elements="415" coveredelements="376" complexity="0" loc="255" ncloc="255" packages="1" files="6" classes="6"/>
     <file name="configuration.ts" path="/Users/sammy/go/src/github.com/samuelwoodcore/projects/tracelit/sdk/node/src/configuration.ts">
       <metrics statements="23" coveredstatements="23" conditionals="17" coveredconditionals="16" methods="6" coveredmethods="6"/>

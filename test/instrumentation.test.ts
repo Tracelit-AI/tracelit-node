@@ -17,7 +17,7 @@ jest.mock("@opentelemetry/sdk-trace-node", () => ({
   ParentBasedSampler: jest.fn(() => ({})),
 }));
 
-jest.mock("@opentelemetry/exporter-trace-otlp-http", () => ({
+jest.mock("@opentelemetry/exporter-trace-otlp-proto", () => ({
   OTLPTraceExporter: jest.fn(() => ({})),
 }));
 
@@ -26,7 +26,7 @@ jest.mock("@opentelemetry/sdk-logs", () => ({
   BatchLogRecordProcessor: jest.fn(() => ({})),
 }));
 
-jest.mock("@opentelemetry/exporter-logs-otlp-http", () => ({
+jest.mock("@opentelemetry/exporter-logs-otlp-proto", () => ({
   OTLPLogExporter: jest.fn(() => ({})),
 }));
 
@@ -43,7 +43,7 @@ jest.mock("@opentelemetry/sdk-metrics", () => ({
   PeriodicExportingMetricReader: jest.fn(() => ({})),
 }));
 
-jest.mock("@opentelemetry/exporter-metrics-otlp-http", () => ({
+jest.mock("@opentelemetry/exporter-metrics-otlp-proto", () => ({
   OTLPMetricExporter: jest.fn(() => ({})),
 }));
 
@@ -222,7 +222,7 @@ describe("Instrumentation.setup()", () => {
   });
 
   it("includes the service.name in the OTLP exporter URL", () => {
-    const { OTLPTraceExporter } = require("@opentelemetry/exporter-trace-otlp-http") as {
+    const { OTLPTraceExporter } = require("@opentelemetry/exporter-trace-otlp-proto") as {
       OTLPTraceExporter: jest.Mock;
     };
     const c = makeConfig();
@@ -234,7 +234,7 @@ describe("Instrumentation.setup()", () => {
   });
 
   it("forwards correct Authorization headers to the trace exporter", () => {
-    const { OTLPTraceExporter } = require("@opentelemetry/exporter-trace-otlp-http") as {
+    const { OTLPTraceExporter } = require("@opentelemetry/exporter-trace-otlp-proto") as {
       OTLPTraceExporter: jest.Mock;
     };
     const c = makeConfig();

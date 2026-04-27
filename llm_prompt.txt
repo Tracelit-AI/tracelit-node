@@ -1,0 +1,86 @@
+You are integrating the Tracelit Node.js SDK into this codebase.
+
+## What Tracelit does
+Tracelit is a drop-in OpenTelemetry SDK that sends traces, metrics, and logs
+to https://tracelit.io via OTLP/HTTP. It auto-instruments Express, Fastify,
+HTTP, database clients, Redis, and more with zero code changes.
+
+## Steps
+
+### 1. Install the package
+npm install tracelit
+# or: yarn add tracelit / pnpm add tracelit
+
+### 2. Initialise at the top of your entry file
+Create a file called tracelit.ts (or tracelit.js) and import it FIRST in your
+entry point (before express, mongoose, redis, etc.):
+
+  import Tracelit from "tracelit";
+
+  Tracelit.configure((config) => {
+    config.apiKey      = process.env.TRACELIT_API_KEY;
+    config.serviceName = "MY_SERVICE_NAME";
+    config.environment = process.env.NODE_ENV ?? "production";
+    config.sampleRate  = 1.0;
+  });
+  Tracelit.start();
+
+Then in your entry point (e.g. server.ts):
+  import "./tracelit";  // MUST be first
+  import express from "express";
+  // ...
+
+### 3. Disable in tests
+Set TRACELIT_ENABLED=false in your test environment:
+  TRACELIT_ENABLED=false npx jest
+
+### 4. Add manual spans (optional)
+  Tracelit.tracer.startActiveSpan("describe_the_operation", (span) => {
+    span.setAttribute("relevant.attribute", String(value));
+    doWork();
+    span.end();
+  });
+
+### 5. Add custom metrics (optional)
+  const counter = Tracelit.metrics.counter("my.event.count", {
+    description: "...", unit: "{events}"
+  });
+  counter?.add(1, { key: "value" });
+
+  const histogram = Tracelit.metrics.histogram("my.operation.duration", {
+    description: "...", unit: "ms"
+  });
+  histogram?.record(elapsed, { service: "stripe" });
+
+### 6. Connect your logger (optional)
+
+  // Winston:
+  import { WinstonTransport } from "tracelit";
+  const logger = winston.createLogger({
+    transports: [new winston.transports.Console(), new WinstonTransport(loggerProvider)],
+  });
+
+  // Pino:
+  import { createPinoDestination } from "tracelit";
+  const logger = pino(pino.multistream([
+    { stream: process.stdout },
+    { stream: createPinoDestination(loggerProvider) },
+  ]));
+
+## What you get automatically (no code required)
+- Traces for every HTTP request, database query, Redis call, gRPC call, etc.
+- Metrics: process.memory.rss (MB), process.event_loop.lag (ms)
+- Error spans always exported even when outside the sample ratio
+- Auto-instrumentations for Express, Fastify, HTTP, pg, mysql2, Redis,
+  MongoDB, gRPC, GraphQL, Kafka, Prisma, and 30+ more
+
+## Configuration reference
+| Option             | Env var                  | Default                        |
+|--------------------|--------------------------|--------------------------------|
+| apiKey             | TRACELIT_API_KEY         | undefined (required)           |
+| serviceName        | TRACELIT_SERVICE_NAME    | undefined (required)           |
+| environment        | TRACELIT_ENVIRONMENT     | "production"                   |
+| endpoint           | TRACELIT_ENDPOINT        | https://ingest.tracelit.app    |
+| sampleRate         | TRACELIT_SAMPLE_RATE     | 1.0                            |
+| enabled            | TRACELIT_ENABLED         | true                           |
+| resourceAttributes | —                        | {} (extra span/metric tags)    |
