@@ -15,10 +15,10 @@ Open [`llm_prompt.txt`](./llm_prompt.txt) and paste its contents into Cursor, Cl
 ## Installation
 
 ```bash
-npm install tracelit
+npm install @tracelit/sdk
 # or
-yarn add tracelit
-pnpm add tracelit
+yarn add @tracelit/sdk
+pnpm add @tracelit/sdk
 ```
 
 ---
@@ -30,7 +30,7 @@ pnpm add tracelit
 `tracelit.ts` (new file):
 
 ```ts
-import Tracelit from "tracelit";
+import Tracelit from "@tracelit/sdk";
 
 Tracelit.configure((config) => {
   config.apiKey      = process.env.TRACELIT_API_KEY;   // required
@@ -89,7 +89,7 @@ Tracelit.configure((config) => {
 Use `Tracelit.tracer` to create custom spans around any operation:
 
 ```ts
-import Tracelit from "tracelit";
+import Tracelit from "@tracelit/sdk";
 
 // Using startActiveSpan (recommended — automatically ends on return/throw)
 const result = await Tracelit.tracer.startActiveSpan("process_payment", async (span) => {
@@ -183,7 +183,7 @@ Add the Tracelit Express middleware to automatically record per-request metrics:
 
 ```ts
 import express from "express";
-import Tracelit from "tracelit";
+import Tracelit from "@tracelit/sdk";
 
 const app = express();
 app.use(Tracelit.expressMetricsMiddleware());
@@ -252,7 +252,7 @@ Severity mapping:
 
 ```ts
 import winston from "winston";
-import { WinstonTransport } from "tracelit";
+import { WinstonTransport } from "@tracelit/sdk";
 import { logs } from "@opentelemetry/api-logs";
 
 const logger = winston.createLogger({
@@ -269,7 +269,7 @@ logger.info("Order created", { orderId: "ord_123" });
 
 ```ts
 import pino from "pino";
-import { createPinoDestination } from "tracelit";
+import { createPinoDestination } from "@tracelit/sdk";
 import { logs } from "@opentelemetry/api-logs";
 
 const otelDest = createPinoDestination(logs.getLoggerProvider());
@@ -346,10 +346,10 @@ The package ships as dual CJS + ESM bundles with full TypeScript declaration fil
 
 ```js
 // CommonJS
-const Tracelit = require("tracelit").default;
+const Tracelit = require("@tracelit/sdk").default;
 Tracelit.configure((c) => { c.apiKey = process.env.TRACELIT_API_KEY; c.serviceName = "my-app"; });
 Tracelit.start();
 
 // ESM
-import Tracelit from "tracelit";
+import Tracelit from "@tracelit/sdk";
 ```

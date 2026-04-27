@@ -8,14 +8,14 @@ HTTP, database clients, Redis, and more with zero code changes.
 ## Steps
 
 ### 1. Install the package
-npm install tracelit
-# or: yarn add tracelit / pnpm add tracelit
+npm install @tracelit/sdk
+# or: yarn add @tracelit/sdk / pnpm add @tracelit/sdk
 
 ### 2. Initialise at the top of your entry file
 Create a file called tracelit.ts (or tracelit.js) and import it FIRST in your
 entry point (before express, mongoose, redis, etc.):
 
-  import Tracelit from "tracelit";
+  import Tracelit from "@tracelit/sdk";
 
   Tracelit.configure((config) => {
     config.apiKey      = process.env.TRACELIT_API_KEY;
@@ -55,13 +55,13 @@ Set TRACELIT_ENABLED=false in your test environment:
 ### 6. Connect your logger (optional)
 
   // Winston:
-  import { WinstonTransport } from "tracelit";
+  import { WinstonTransport } from "@tracelit/sdk";
   const logger = winston.createLogger({
     transports: [new winston.transports.Console(), new WinstonTransport(loggerProvider)],
   });
 
   // Pino:
-  import { createPinoDestination } from "tracelit";
+  import { createPinoDestination } from "@tracelit/sdk";
   const logger = pino(pino.multistream([
     { stream: process.stdout },
     { stream: createPinoDestination(loggerProvider) },
