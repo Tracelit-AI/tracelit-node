@@ -6,8 +6,7 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: write  # needed to create GitHub Releases
-  id-token: write  # needed for npm provenance
+  contents: write  # needed to create GitHub Releases and push CHANGELOG
 
 jobs:
   test:
@@ -75,7 +74,7 @@ jobs:
         run: npm version "${{ steps.meta.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - name: Publish
-        run: npm publish --tag "${{ steps.meta.outputs.dist_tag }}" --provenance --access public
+        run: npm publish --tag "${{ steps.meta.outputs.dist_tag }}" --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
