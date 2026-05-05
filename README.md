@@ -6,12 +6,6 @@ Official Node.js SDK for [Tracelit](https://tracelit.io) — drop-in OpenTelemet
 
 ---
 
-## Set up with AI
-
-Open [`llm_prompt.txt`](./llm_prompt.txt) and paste its contents into Cursor, Claude, ChatGPT, or any AI assistant. It contains everything the AI needs to fully integrate Tracelit into your app — package setup, configuration, manual spans, custom metrics, and logger bridge.
-
----
-
 ## Installation
 
 ```bash
@@ -326,16 +320,6 @@ TRACELIT_ENABLED=false
 
 ---
 
-## Running the SDK's own tests
-
-```bash
-npm install
-npm test
-npm run test:coverage
-```
-
----
-
 ## TypeScript / JavaScript compatibility
 
 The package ships as dual CJS + ESM bundles with full TypeScript declaration files. It works with:
@@ -353,3 +337,9 @@ Tracelit.start();
 // ESM
 import Tracelit from "@tracelit/sdk";
 ```
+
+---
+
+## Changelog
+
+See the [release history](https://docs.tracelit.io/changelog) on the Tracelit docs.

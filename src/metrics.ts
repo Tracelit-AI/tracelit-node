@@ -28,8 +28,9 @@ let provider: MeterProvider | null = null;
  * Export timeout: 10 000 ms.
  *
  * Auto-pollers installed:
- *  - process.memory.rss   — polled every 60 s
- *  - process.event_loop.lag — polled every 30 s
+ *  - process.memory.rss          — polled every 60 s
+ *  - process.event_loop.lag      — polled every 30 s
+ *  - process.runtime.cpu.usage   — polled every 30 s
  */
 export function setup(
   endpoint: string,
@@ -62,6 +63,7 @@ export function setup(
 
     installMemoryPoller();
     installEventLoopLagPoller();
+    installCpuPoller();
   } catch (err) {
     console.warn(
       `Tracelit: failed to set up metrics: ${(err as Error).message}`,
@@ -246,6 +248,59 @@ export function installEventLoopLagPoller(): NodeJS.Timeout | null {
       });
     } catch {
       // Ignore.
+    }
+  }, INTERVAL_MS);
+
+  timer.unref();
+  return timer;
+}
+
+/**
+ * Polls process CPU utilisation every 30 seconds using `process.cpuUsage()`.
+ * Computes a percentage over the interval: (user + system µs) ÷ (elapsed ms × 10).
+ *
+ * Emits: process.runtime.cpu.usage (%)
+ * Attributes: process.pid, process.runtime
+ *
+ * The emitted name matches what `QueryServiceSummary` in the API queries for,
+ * enabling the Avg CPU Load widget on the service dashboard.
+ */
+export function installCpuPoller(): NodeJS.Timeout | null {
+  if (!meter) return null;
+
+  const cpuGauge = meter.createGauge("process.runtime.cpu.usage", {
+    description: "Process CPU utilisation percentage",
+    unit: "%",
+  });
+
+  const pid = String(process.pid);
+  const INTERVAL_MS = 30_000;
+  let lastCpuUsage = process.cpuUsage();
+  let lastTime = Date.now();
+
+  const timer = setInterval(() => {
+    try {
+      const now = Date.now();
+      const elapsed = now - lastTime; // ms
+      if (elapsed <= 0) return;
+
+      // cpuUsage(previous) returns the delta since `previous` in microseconds.
+      const delta = process.cpuUsage(lastCpuUsage);
+      lastCpuUsage = process.cpuUsage();
+      lastTime = now;
+
+      // (user + system) µs → ms; divide by elapsed ms to get a 0–1 ratio;
+      // multiply by 100 for percentage. Cap at 100 for multi-core cases
+      // where we only report a single-core equivalent percentage.
+      const cpuMs = (delta.user + delta.system) / 1000;
+      const cpuPct = Math.min(100, (cpuMs / elapsed) * 100);
+
+      cpuGauge.record(cpuPct, {
+        "process.pid": pid,
+        "process.runtime": "nodejs",
+      });
+    } catch {
+      // Ignore — cpuUsage() should never throw in practice.
     }
   }, INTERVAL_MS);
 

@@ -15,6 +15,7 @@ import { LoggerProvider, BatchLogRecordProcessor } from "@opentelemetry/sdk-logs
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { execFileSync } from "child_process";
 import type { Resource } from "@opentelemetry/resources";
 import type { Configuration } from "./configuration";
 import { ErrorAlwaysOnSampler } from "./error-always-on-sampler";
@@ -82,14 +83,68 @@ function buildResource(
   config: Configuration,
   serviceName: string,
 ): Resource {
-  return resourceFromAttributes({
+  const attrs: Record<string, string> = {
     [SEMRESATTRS_SERVICE_NAME]: serviceName,
     [SEMRESATTRS_DEPLOYMENT_ENVIRONMENT]: config.environment,
     "telemetry.sdk.language": "nodejs",
     "telemetry.sdk.name": detectFramework(),
     "telemetry.sdk.version": SDK_VERSION,
     ...config.resourceAttributes,
-  });
+  };
+
+  // Attach the git commit SHA automatically — no developer config needed.
+  // Resolution order mirrors every other Tracelit SDK:
+  //   1. Common CI/CD env vars (set by GitHub Actions, Render, GitLab, etc.)
+  //   2. `git rev-parse HEAD` — works in local dev and any cloned environment.
+  const sha = resolveCommitSha();
+  if (sha) {
+    attrs["service.commit_sha"] = sha;
+  }
+
+  return resourceFromAttributes(attrs);
+}
+
+/**
+ * Resolves the current git commit SHA with zero developer friction.
+ * Checks common CI/CD environment variables first, then falls back to
+ * running `git rev-parse HEAD`. Result is not cached here — setup() is
+ * already guarded by `configured` so this runs at most once per process.
+ */
+function resolveCommitSha(): string | undefined {
+  const envVars = [
+    "GITHUB_SHA",            // GitHub Actions
+    "GIT_COMMIT",            // Jenkins, generic
+    "GIT_COMMIT_SHA",        // generic
+    "SOURCE_COMMIT",         // Heroku
+    "HEROKU_SLUG_COMMIT",    // Heroku (slug)
+    "RENDER_GIT_COMMIT",     // Render
+    "CI_COMMIT_SHA",         // GitLab CI
+    "CIRCLE_SHA1",           // CircleCI
+    "BITBUCKET_COMMIT",      // Bitbucket Pipelines
+    "RAILWAY_GIT_COMMIT_SHA",// Railway
+    "FLY_APP_VERSION",       // Fly.io
+  ];
+
+  for (const envVar of envVars) {
+    const v = process.env[envVar]?.trim();
+    if (v && v.length >= 7) return v;
+  }
+
+  // Fall back to running git — works in local dev and CI with a cloned repo.
+  // execFileSync avoids shell injection and throws on non-zero exit.
+  try {
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+      timeout: 3000,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    if (sha.length >= 7) return sha;
+  } catch {
+    // git not on PATH, not a git repo, or timed out — skip silently.
+  }
+
+  return undefined;
 }
 
 /**
@@ -179,3 +234,4 @@ function setupLogs(
   // Install the console bridge after the provider is ready.
   installConsoleBridge(loggerProvider);
 }
+
