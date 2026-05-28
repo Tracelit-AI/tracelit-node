@@ -1,6 +1,6 @@
 {
   "name": "@tracelit/sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Official Node.js SDK for Tracelit — drop-in OpenTelemetry instrumentation for Node.js apps. Sends traces, metrics, and logs to the Tracelit ingest API via OTLP/HTTP.",
   "keywords": [
     "tracelit",
