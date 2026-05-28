@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.3] - 2026-05-28
 
+### Changes
+
+- chore(release): bump version to 0.2.3 (67044c5)
+- fix(sdk-node): make uncaughtException handlers opt-in to prevent app hangs (53f2411)
+- chore(release): update CHANGELOG for v0.2.2 (6ab29cd)
+
+[0.2.3]: https://github.com/Tracelit-AI/tracelit-node/compare/v0.2.2...v0.2.3
+
+## [0.2.3] - 2026-05-28
+
 ### Fixed
 
 - **Critical: host applications no longer hang on uncaught exceptions.**
