@@ -50,7 +50,7 @@ export * as TraceLitMetrics from "./metrics";
 export type { TraceLitConfig, InstrumentOptions, ConsoleBridgeOptions } from "./types";
 
 const SDK_NAME = "tracelit";
-const SDK_VERSION = "0.1.0";
+const SDK_VERSION = "0.2.0";
 
 let _config: Configuration = new Configuration();
 
@@ -97,6 +97,23 @@ const Tracelit = {
    */
   start(): void {
     Instrumentation.setup(_config);
+  },
+
+  /**
+   * Force-flush all pending telemetry (traces, logs, metrics) to Tracelit.
+   * Useful in serverless handlers, before `process.exit()` calls, or right
+   * after recording a critical error. Resolves once exporters report done.
+   */
+  flush(): Promise<void> {
+    return Instrumentation.flush();
+  },
+
+  /**
+   * Gracefully shut down all OpenTelemetry providers (flush + close exporters).
+   * Called automatically on SIGTERM/SIGINT — exposed for manual control.
+   */
+  shutdown(): Promise<void> {
+    return Instrumentation.shutdown();
   },
 
   /**

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2026-05-28
+
+### Added
+
+- Automatic crash capture: `uncaughtException` and `unhandledRejection` are now
+  recorded as ERROR spans and flushed to Tracelit before the process exits.
+  Customers no longer need to wrap their entry point to get incidents from
+  server crashes.
+- Graceful shutdown handlers for `SIGTERM`, `SIGINT`, and `beforeExit` —
+  in-flight traces, logs, and metrics are flushed on rolling deploys.
+- New public APIs:
+  - `Tracelit.flush()` — force-drain pending telemetry. Useful in serverless
+    handlers and right before manual `process.exit()` calls.
+  - `Tracelit.shutdown()` — gracefully close all OpenTelemetry providers.
+
+### Changed
+
+- `Tracelit.start()` no longer throws when configuration is missing.
+  Misconfiguration now disables the SDK with a `[Tracelit] disabled — …`
+  console warning so it can never crash the host application.
+- `serviceName` is no longer required. The SDK falls back to
+  `OTEL_SERVICE_NAME`, `SERVICE_NAME`, then `APP_NAME` environment variables
+  before defaulting to `"unknown-service"`.
+
+### Fixed
+
+- Pending spans in the `BatchSpanProcessor` queue are now flushed on crash and
+  shutdown. Previously these were lost when the process exited, which
+  prevented error spans from reaching the Tracelit dashboard.
+
+[0.2.0]: https://github.com/Tracelit-AI/tracelit-node/compare/v0.1.2...v0.2.0
+
 ## [0.1.1] - 2026-04-27
 
 ### Changes

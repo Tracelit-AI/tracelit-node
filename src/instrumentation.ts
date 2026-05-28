@@ -1,4 +1,4 @@
-import { trace } from "@opentelemetry/api";
+import { trace, SpanStatusCode } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
@@ -23,10 +23,13 @@ import { ErrorSpanProcessor } from "./error-span-processor";
 import { installConsoleBridge } from "./logger-bridge";
 import * as Metrics from "./metrics";
 
-export const SDK_VERSION = "0.1.0";
+export const SDK_VERSION = "0.2.0";
 
 /** Internal setup state — reset via reset() for tests. */
 let configured = false;
+let tracerProviderRef: NodeTracerProvider | null = null;
+let loggerProviderRef: LoggerProvider | null = null;
+let exitHandlersInstalled = false;
 
 /**
  * Sets up all OTel SDK components for the Tracelit SDK:
@@ -34,15 +37,22 @@ let configured = false;
  *   2. Auto-instrumentation for all installed libraries
  *   3. LoggerProvider with BatchLogRecordProcessor → console bridge
  *   4. MeterProvider with PeriodicMetricReader
+ *   5. Process-exit + crash handlers that flush pending telemetry
  *
  * Idempotent — safe to call multiple times; subsequent calls are no-ops.
- * Returns immediately if `config.enabled` is false.
+ * Returns immediately if `config.enabled` is false. On configuration errors
+ * the SDK disables itself with a console warning instead of throwing, so the
+ * host application keeps running.
  */
 export function setup(config: Configuration): void {
   if (configured) return;
   if (!config.enabled) return;
 
-  config.validate();
+  const errors = config.collectValidationErrors();
+  if (errors.length > 0) {
+    console.warn(`[Tracelit] disabled — ${errors.join(", ")}`);
+    return;
+  }
 
   const serviceName = config.resolvedServiceName();
   const headers = config.exportHeaders();
@@ -66,13 +76,43 @@ export function setup(config: Configuration): void {
     );
   }
 
+  installExitHandlers();
+
   configured = true;
 }
 
 /** @internal — used in tests to reset state between runs. */
 export function reset(): void {
   configured = false;
+  tracerProviderRef = null;
+  loggerProviderRef = null;
   Metrics.reset();
+}
+
+/**
+ * Flush all buffered telemetry (traces, logs, metrics) to the exporters.
+ * Called by exit / crash handlers and exposed for advanced users who need
+ * a forced flush (e.g. serverless handlers right before returning).
+ */
+export async function flush(): Promise<void> {
+  const tasks: Promise<unknown>[] = [];
+  if (tracerProviderRef) tasks.push(tracerProviderRef.forceFlush().catch(() => undefined));
+  if (loggerProviderRef) tasks.push(loggerProviderRef.forceFlush().catch(() => undefined));
+  tasks.push(Metrics.flush().catch(() => undefined));
+  await Promise.all(tasks);
+}
+
+/**
+ * Shutdown all providers (calls forceFlush then closes exporters). Used by
+ * the SIGTERM handler so long-running pods get a clean drain on rolling
+ * deploys. Safe to call multiple times.
+ */
+export async function shutdown(): Promise<void> {
+  await flush();
+  const tasks: Promise<unknown>[] = [];
+  if (tracerProviderRef) tasks.push(tracerProviderRef.shutdown().catch(() => undefined));
+  if (loggerProviderRef) tasks.push(loggerProviderRef.shutdown().catch(() => undefined));
+  await Promise.all(tasks);
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +239,7 @@ function setupTraces(
   });
 
   tracerProvider.register();
+  tracerProviderRef = tracerProvider;
 
   registerInstrumentations({
     instrumentations: [
@@ -230,8 +271,89 @@ function setupLogs(
   });
 
   logs.setGlobalLoggerProvider(loggerProvider);
+  loggerProviderRef = loggerProvider;
 
   // Install the console bridge after the provider is ready.
   installConsoleBridge(loggerProvider);
+}
+
+/**
+ * Install process-level handlers so telemetry survives crashes and shutdowns:
+ *
+ *   • `uncaughtException`   — record exception on a new span, flush, re-throw
+ *   • `unhandledRejection`  — record exception on a new span, flush (process keeps running)
+ *   • `SIGTERM` / `SIGINT`  — graceful shutdown: flush + close providers + exit
+ *   • `beforeExit`          — last-chance flush for normal exits
+ *
+ * Without these, BatchSpanProcessor's in-memory queue is lost on crash and
+ * the error span the user is debugging never reaches Tracelit.
+ */
+function installExitHandlers(): void {
+  if (exitHandlersInstalled) return;
+  exitHandlersInstalled = true;
+
+  const flushSync = (): void => {
+    // Best-effort: kick off the flush. Node's exit path waits for I/O briefly.
+    void flush();
+  };
+
+  // `beforeExit` fires when the event loop empties — normal graceful exit path.
+  process.on("beforeExit", flushSync);
+
+  // SIGTERM/SIGINT — orchestrators (k8s, pm2, systemd) send these on shutdown.
+  const handleSignal = (sig: NodeJS.Signals) => {
+    void shutdown().finally(() => {
+      // Re-raise the signal so the process actually exits with the right code.
+      process.kill(process.pid, sig);
+    });
+  };
+  process.once("SIGTERM", () => handleSignal("SIGTERM"));
+  process.once("SIGINT", () => handleSignal("SIGINT"));
+
+  // Uncaught crashes — record on a span so the customer sees an incident.
+  // We DO NOT swallow the error: after flushing we re-throw so the runtime
+  // can still print the stack and exit with code 1 as it normally would.
+  process.on("uncaughtException", (err) => {
+    try {
+      recordCrashAsSpan(err, "uncaughtException");
+    } catch {
+      // never crash the crash handler
+    }
+    void flush().finally(() => {
+      // Re-throw on next tick so the runtime prints + exits.
+      setImmediate(() => {
+        throw err;
+      });
+    });
+  });
+
+  // Unhandled promise rejections — don't kill the process, just flush a span.
+  process.on("unhandledRejection", (reason) => {
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    try {
+      recordCrashAsSpan(err, "unhandledRejection");
+    } catch {
+      // never crash the crash handler
+    }
+    void flush();
+  });
+}
+
+/**
+ * Open a one-off ERROR span describing a crash and end it immediately.
+ * The ErrorSpanProcessor + BatchSpanProcessor will pick it up on the next
+ * flush — which we trigger explicitly from the caller.
+ */
+function recordCrashAsSpan(err: Error, source: string): void {
+  if (!tracerProviderRef) return;
+  const tracer = tracerProviderRef.getTracer("tracelit-crash", SDK_VERSION);
+  const span = tracer.startSpan(source);
+  span.recordException(err);
+  span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+  span.setAttribute("error.source", source);
+  span.setAttribute("error.type", err.name);
+  span.setAttribute("error.message", err.message);
+  if (err.stack) span.setAttribute("exception.stacktrace", err.stack);
+  span.end();
 }
 

@@ -41,36 +41,43 @@ export class Configuration implements TraceLitConfig {
    * Throws a descriptive Error on the first validation failure found.
    */
   validate(): void {
-    if (!this.apiKey) {
-      throw new Error(
-        "Tracelit: config.apiKey is required. " +
-          "Set it programmatically or via the TRACELIT_API_KEY environment variable.",
-      );
-    }
-
-    if (!this.serviceName) {
-      throw new Error(
-        "Tracelit: config.serviceName is required. " +
-          "Set it programmatically or via the TRACELIT_SERVICE_NAME environment variable.",
-      );
-    }
-
-    if (this.sampleRate < 0 || this.sampleRate > 1) {
-      throw new Error(
-        `Tracelit: config.sampleRate must be between 0.0 and 1.0, got ${this.sampleRate}.`,
-      );
+    const errors = this.collectValidationErrors();
+    if (errors.length > 0) {
+      throw new Error("Tracelit: " + errors[0]);
     }
   }
 
   /**
+   * Returns a list of validation errors without throwing. The SDK uses this
+   * during start-up so misconfiguration disables telemetry with a warning
+   * instead of crashing the host application.
+   */
+  collectValidationErrors(): string[] {
+    const errors: string[] = [];
+    if (!this.apiKey) {
+      errors.push(
+        "config.apiKey is required. Set it programmatically or via the TRACELIT_API_KEY environment variable.",
+      );
+    }
+    if (this.sampleRate < 0 || this.sampleRate > 1) {
+      errors.push(
+        `config.sampleRate must be between 0.0 and 1.0, got ${this.sampleRate}.`,
+      );
+    }
+    return errors;
+  }
+
+  /**
    * Returns the effective service name. Falls back to "unknown-service" when
-   * serviceName is not set — callers that need a validated name should call
-   * validate() first.
+   * serviceName is not set — telemetry still flows so developers can locate
+   * their service in the dashboard and rename it later.
    */
   resolvedServiceName(): string {
     if (this.serviceName && this.serviceName.trim().length > 0) {
       return this.serviceName.trim();
     }
+    const envName = process.env["OTEL_SERVICE_NAME"] || process.env["SERVICE_NAME"] || process.env["APP_NAME"];
+    if (envName && envName.trim().length > 0) return envName.trim();
     return "unknown-service";
   }
 

@@ -175,16 +175,30 @@ describe("Instrumentation.setup()", () => {
     expect(NodeTracerProvider).not.toHaveBeenCalled();
   });
 
-  it("throws when config is invalid (missing apiKey)", () => {
-    const c = makeConfig();
-    c.apiKey = undefined;
-    expect(() => Instrumentation.setup(c)).toThrow(/apiKey is required/);
+  it("disables instead of throwing when config is invalid (missing apiKey)", () => {
+    const { NodeTracerProvider } = require("@opentelemetry/sdk-trace-node") as {
+      NodeTracerProvider: jest.Mock;
+    };
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const c = makeConfig();
+      c.apiKey = undefined;
+      expect(() => Instrumentation.setup(c)).not.toThrow();
+      expect(NodeTracerProvider).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Tracelit.*disabled.*apiKey/));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
-  it("throws when config is invalid (missing serviceName)", () => {
+  it("falls back to default serviceName when missing (no throw)", () => {
+    const { NodeTracerProvider } = require("@opentelemetry/sdk-trace-node") as {
+      NodeTracerProvider: jest.Mock;
+    };
     const c = makeConfig();
     c.serviceName = undefined;
-    expect(() => Instrumentation.setup(c)).toThrow(/serviceName is required/);
+    expect(() => Instrumentation.setup(c)).not.toThrow();
+    expect(NodeTracerProvider).toHaveBeenCalled();
   });
 
   it("uses a ParentBasedSampler when sampleRate < 1.0", () => {

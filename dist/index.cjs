@@ -11,6 +11,7 @@ var exporterTraceOtlpProto = require('@opentelemetry/exporter-trace-otlp-proto')
 var sdkLogs = require('@opentelemetry/sdk-logs');
 var exporterLogsOtlpProto = require('@opentelemetry/exporter-logs-otlp-proto');
 var autoInstrumentationsNode = require('@opentelemetry/auto-instrumentations-node');
+var child_process = require('child_process');
 var sdkTraceBase = require('@opentelemetry/sdk-trace-base');
 var sdkMetrics = require('@opentelemetry/sdk-metrics');
 var exporterMetricsOtlpProto = require('@opentelemetry/exporter-metrics-otlp-proto');
@@ -44,31 +45,41 @@ var Configuration = class {
    * Throws a descriptive Error on the first validation failure found.
    */
   validate() {
-    if (!this.apiKey) {
-      throw new Error(
-        "Tracelit: config.apiKey is required. Set it programmatically or via the TRACELIT_API_KEY environment variable."
-      );
-    }
-    if (!this.serviceName) {
-      throw new Error(
-        "Tracelit: config.serviceName is required. Set it programmatically or via the TRACELIT_SERVICE_NAME environment variable."
-      );
-    }
-    if (this.sampleRate < 0 || this.sampleRate > 1) {
-      throw new Error(
-        `Tracelit: config.sampleRate must be between 0.0 and 1.0, got ${this.sampleRate}.`
-      );
+    const errors = this.collectValidationErrors();
+    if (errors.length > 0) {
+      throw new Error("Tracelit: " + errors[0]);
     }
   }
   /**
+   * Returns a list of validation errors without throwing. The SDK uses this
+   * during start-up so misconfiguration disables telemetry with a warning
+   * instead of crashing the host application.
+   */
+  collectValidationErrors() {
+    const errors = [];
+    if (!this.apiKey) {
+      errors.push(
+        "config.apiKey is required. Set it programmatically or via the TRACELIT_API_KEY environment variable."
+      );
+    }
+    if (this.sampleRate < 0 || this.sampleRate > 1) {
+      errors.push(
+        `config.sampleRate must be between 0.0 and 1.0, got ${this.sampleRate}.`
+      );
+    }
+    return errors;
+  }
+  /**
    * Returns the effective service name. Falls back to "unknown-service" when
-   * serviceName is not set — callers that need a validated name should call
-   * validate() first.
+   * serviceName is not set — telemetry still flows so developers can locate
+   * their service in the dashboard and rename it later.
    */
   resolvedServiceName() {
     if (this.serviceName && this.serviceName.trim().length > 0) {
       return this.serviceName.trim();
     }
+    const envName = process.env["OTEL_SERVICE_NAME"] || process.env["SERVICE_NAME"] || process.env["APP_NAME"];
+    if (envName && envName.trim().length > 0) return envName.trim();
     return "unknown-service";
   }
   /**
@@ -365,15 +376,17 @@ __export(metrics_exports, {
   VERSION: () => VERSION2,
   counter: () => counter,
   expressMetricsMiddleware: () => expressMetricsMiddleware,
+  flush: () => flush,
   gauge: () => gauge,
   histogram: () => histogram,
+  installCpuPoller: () => installCpuPoller,
   installEventLoopLagPoller: () => installEventLoopLagPoller,
   installMemoryPoller: () => installMemoryPoller,
   observableGauge: () => observableGauge,
   reset: () => reset,
   setup: () => setup
 });
-var VERSION2 = "0.1.0";
+var VERSION2 = "0.2.0";
 var meter = null;
 var provider = null;
 function setup(endpoint, headers, resource, serviceName) {
@@ -396,6 +409,7 @@ function setup(endpoint, headers, resource, serviceName) {
     meter = provider.getMeter(serviceName, VERSION2);
     installMemoryPoller();
     installEventLoopLagPoller();
+    installCpuPoller();
   } catch (err) {
     console.warn(
       `Tracelit: failed to set up metrics: ${err.message}`
@@ -407,6 +421,11 @@ function reset() {
   if (provider) {
     provider.shutdown().catch(() => void 0);
     provider = null;
+  }
+}
+async function flush() {
+  if (provider) {
+    await provider.forceFlush().catch(() => void 0);
   }
 }
 function counter(name, options = {}) {
@@ -481,6 +500,36 @@ function installEventLoopLagPoller() {
   timer.unref();
   return timer;
 }
+function installCpuPoller() {
+  if (!meter) return null;
+  const cpuGauge = meter.createGauge("process.runtime.cpu.usage", {
+    description: "Process CPU utilisation percentage",
+    unit: "%"
+  });
+  const pid = String(process.pid);
+  const INTERVAL_MS = 3e4;
+  let lastCpuUsage = process.cpuUsage();
+  let lastTime = Date.now();
+  const timer = setInterval(() => {
+    try {
+      const now = Date.now();
+      const elapsed = now - lastTime;
+      if (elapsed <= 0) return;
+      const delta = process.cpuUsage(lastCpuUsage);
+      lastCpuUsage = process.cpuUsage();
+      lastTime = now;
+      const cpuMs = (delta.user + delta.system) / 1e3;
+      const cpuPct = Math.min(100, cpuMs / elapsed * 100);
+      cpuGauge.record(cpuPct, {
+        "process.pid": pid,
+        "process.runtime": "nodejs"
+      });
+    } catch {
+    }
+  }, INTERVAL_MS);
+  timer.unref();
+  return timer;
+}
 function expressMetricsMiddleware() {
   if (!meter) {
     return (_req, _res, next) => next();
@@ -526,12 +575,19 @@ function expressMetricsMiddleware() {
 }
 
 // src/instrumentation.ts
-var SDK_VERSION = "0.1.0";
+var SDK_VERSION = "0.2.0";
 var configured = false;
+var tracerProviderRef = null;
+var loggerProviderRef = null;
+var exitHandlersInstalled = false;
 function setup2(config) {
   if (configured) return;
   if (!config.enabled) return;
-  config.validate();
+  const errors = config.collectValidationErrors();
+  if (errors.length > 0) {
+    console.warn(`[Tracelit] disabled \u2014 ${errors.join(", ")}`);
+    return;
+  }
   const serviceName = config.resolvedServiceName();
   const headers = config.exportHeaders();
   const resource = buildResource(config, serviceName);
@@ -550,21 +606,82 @@ function setup2(config) {
       `Tracelit: failed to set up metrics: ${err.message}`
     );
   }
+  installExitHandlers();
   configured = true;
 }
 function reset2() {
   configured = false;
+  tracerProviderRef = null;
+  loggerProviderRef = null;
   reset();
 }
+async function flush2() {
+  const tasks = [];
+  if (tracerProviderRef) tasks.push(tracerProviderRef.forceFlush().catch(() => void 0));
+  if (loggerProviderRef) tasks.push(loggerProviderRef.forceFlush().catch(() => void 0));
+  tasks.push(flush().catch(() => void 0));
+  await Promise.all(tasks);
+}
+async function shutdown() {
+  await flush2();
+  const tasks = [];
+  if (tracerProviderRef) tasks.push(tracerProviderRef.shutdown().catch(() => void 0));
+  if (loggerProviderRef) tasks.push(loggerProviderRef.shutdown().catch(() => void 0));
+  await Promise.all(tasks);
+}
 function buildResource(config, serviceName) {
-  return resources.resourceFromAttributes({
+  const attrs = {
     [semanticConventions.SEMRESATTRS_SERVICE_NAME]: serviceName,
     [semanticConventions.SEMRESATTRS_DEPLOYMENT_ENVIRONMENT]: config.environment,
     "telemetry.sdk.language": "nodejs",
     "telemetry.sdk.name": detectFramework(),
     "telemetry.sdk.version": SDK_VERSION,
     ...config.resourceAttributes
-  });
+  };
+  const sha = resolveCommitSha();
+  if (sha) {
+    attrs["service.commit_sha"] = sha;
+  }
+  return resources.resourceFromAttributes(attrs);
+}
+function resolveCommitSha() {
+  const envVars = [
+    "GITHUB_SHA",
+    // GitHub Actions
+    "GIT_COMMIT",
+    // Jenkins, generic
+    "GIT_COMMIT_SHA",
+    // generic
+    "SOURCE_COMMIT",
+    // Heroku
+    "HEROKU_SLUG_COMMIT",
+    // Heroku (slug)
+    "RENDER_GIT_COMMIT",
+    // Render
+    "CI_COMMIT_SHA",
+    // GitLab CI
+    "CIRCLE_SHA1",
+    // CircleCI
+    "BITBUCKET_COMMIT",
+    // Bitbucket Pipelines
+    "RAILWAY_GIT_COMMIT_SHA",
+    // Railway
+    "FLY_APP_VERSION"
+    // Fly.io
+  ];
+  for (const envVar of envVars) {
+    const v = process.env[envVar]?.trim();
+    if (v && v.length >= 7) return v;
+  }
+  try {
+    const sha = child_process.execFileSync("git", ["rev-parse", "HEAD"], {
+      timeout: 3e3,
+      stdio: ["ignore", "pipe", "ignore"]
+    }).toString().trim();
+    if (sha.length >= 7) return sha;
+  } catch {
+  }
+  return void 0;
 }
 function detectFramework() {
   if (isModulePresent("express")) return "express";
@@ -600,6 +717,7 @@ function setupTraces(config, resource, headers, serviceName) {
     ]
   });
   tracerProvider.register();
+  tracerProviderRef = tracerProvider;
   registerInstrumentations({
     instrumentations: [
       autoInstrumentationsNode.getNodeAutoInstrumentations({
@@ -621,12 +739,59 @@ function setupLogs(config, resource, headers) {
     processors: [new sdkLogs.BatchLogRecordProcessor(logsExporter)]
   });
   apiLogs.logs.setGlobalLoggerProvider(loggerProvider);
+  loggerProviderRef = loggerProvider;
   installConsoleBridge(loggerProvider);
+}
+function installExitHandlers() {
+  if (exitHandlersInstalled) return;
+  exitHandlersInstalled = true;
+  const flushSync = () => {
+    void flush2();
+  };
+  process.on("beforeExit", flushSync);
+  const handleSignal = (sig) => {
+    void shutdown().finally(() => {
+      process.kill(process.pid, sig);
+    });
+  };
+  process.once("SIGTERM", () => handleSignal("SIGTERM"));
+  process.once("SIGINT", () => handleSignal("SIGINT"));
+  process.on("uncaughtException", (err) => {
+    try {
+      recordCrashAsSpan(err, "uncaughtException");
+    } catch {
+    }
+    void flush2().finally(() => {
+      setImmediate(() => {
+        throw err;
+      });
+    });
+  });
+  process.on("unhandledRejection", (reason) => {
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    try {
+      recordCrashAsSpan(err, "unhandledRejection");
+    } catch {
+    }
+    void flush2();
+  });
+}
+function recordCrashAsSpan(err, source) {
+  if (!tracerProviderRef) return;
+  const tracer = tracerProviderRef.getTracer("tracelit-crash", SDK_VERSION);
+  const span = tracer.startSpan(source);
+  span.recordException(err);
+  span.setStatus({ code: api.SpanStatusCode.ERROR, message: err.message });
+  span.setAttribute("error.source", source);
+  span.setAttribute("error.type", err.name);
+  span.setAttribute("error.message", err.message);
+  if (err.stack) span.setAttribute("exception.stacktrace", err.stack);
+  span.end();
 }
 
 // src/index.ts
 var SDK_NAME = "tracelit";
-var SDK_VERSION2 = "0.1.0";
+var SDK_VERSION2 = "0.2.0";
 var _config = new Configuration();
 var Tracelit = {
   /**
@@ -665,6 +830,21 @@ var Tracelit = {
    */
   start() {
     setup2(_config);
+  },
+  /**
+   * Force-flush all pending telemetry (traces, logs, metrics) to Tracelit.
+   * Useful in serverless handlers, before `process.exit()` calls, or right
+   * after recording a critical error. Resolves once exporters report done.
+   */
+  flush() {
+    return flush2();
+  },
+  /**
+   * Gracefully shut down all OpenTelemetry providers (flush + close exporters).
+   * Called automatically on SIGTERM/SIGINT — exposed for manual control.
+   */
+  shutdown() {
+    return shutdown();
   },
   /**
    * An OpenTelemetry Tracer scoped to this service. Use for manual

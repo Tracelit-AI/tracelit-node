@@ -91,9 +91,15 @@ declare class Configuration implements TraceLitConfig {
      */
     validate(): void;
     /**
+     * Returns a list of validation errors without throwing. The SDK uses this
+     * during start-up so misconfiguration disables telemetry with a warning
+     * instead of crashing the host application.
+     */
+    collectValidationErrors(): string[];
+    /**
      * Returns the effective service name. Falls back to "unknown-service" when
-     * serviceName is not set — callers that need a validated name should call
-     * validate() first.
+     * serviceName is not set — telemetry still flows so developers can locate
+     * their service in the dashboard and rename it later.
      */
     resolvedServiceName(): string;
     /**
@@ -108,7 +114,7 @@ declare class Configuration implements TraceLitConfig {
     exportHeaders(): Record<string, string>;
 }
 
-declare const VERSION = "0.1.0";
+declare const VERSION = "0.2.0";
 /**
  * Sets up the OpenTelemetry MeterProvider with an OTLP/HTTP exporter and
  * registers it globally. Called once from Instrumentation.setup().
@@ -117,12 +123,19 @@ declare const VERSION = "0.1.0";
  * Export timeout: 10 000 ms.
  *
  * Auto-pollers installed:
- *  - process.memory.rss   — polled every 60 s
- *  - process.event_loop.lag — polled every 30 s
+ *  - process.memory.rss          — polled every 60 s
+ *  - process.event_loop.lag      — polled every 30 s
+ *  - process.runtime.cpu.usage   — polled every 30 s
  */
 declare function setup(endpoint: string, headers: Record<string, string>, resource: Resource, serviceName: string): void;
 /** @internal — used in tests to tear down state between runs. */
 declare function reset(): void;
+/**
+ * Force the MeterProvider to flush all pending metric data to the exporter.
+ * Called by the SDK's exit / crash handlers so metric snapshots survive
+ * process termination.
+ */
+declare function flush(): Promise<void>;
 /**
  * Creates and returns a Counter instrument.
  *
@@ -196,6 +209,17 @@ declare function installMemoryPoller(): NodeJS.Timeout | null;
  */
 declare function installEventLoopLagPoller(): NodeJS.Timeout | null;
 /**
+ * Polls process CPU utilisation every 30 seconds using `process.cpuUsage()`.
+ * Computes a percentage over the interval: (user + system µs) ÷ (elapsed ms × 10).
+ *
+ * Emits: process.runtime.cpu.usage (%)
+ * Attributes: process.pid, process.runtime
+ *
+ * The emitted name matches what `QueryServiceSummary` in the API queries for,
+ * enabling the Avg CPU Load widget on the service dashboard.
+ */
+declare function installCpuPoller(): NodeJS.Timeout | null;
+/**
  * Returns an Express-compatible middleware that records per-request metrics:
  *   http.server.request.count    — counter
  *   http.server.request.duration — histogram (ms)
@@ -229,15 +253,17 @@ interface ExpressResponse {
 declare const Metrics_VERSION: typeof VERSION;
 declare const Metrics_counter: typeof counter;
 declare const Metrics_expressMetricsMiddleware: typeof expressMetricsMiddleware;
+declare const Metrics_flush: typeof flush;
 declare const Metrics_gauge: typeof gauge;
 declare const Metrics_histogram: typeof histogram;
+declare const Metrics_installCpuPoller: typeof installCpuPoller;
 declare const Metrics_installEventLoopLagPoller: typeof installEventLoopLagPoller;
 declare const Metrics_installMemoryPoller: typeof installMemoryPoller;
 declare const Metrics_observableGauge: typeof observableGauge;
 declare const Metrics_reset: typeof reset;
 declare const Metrics_setup: typeof setup;
 declare namespace Metrics {
-  export { Metrics_VERSION as VERSION, Metrics_counter as counter, Metrics_expressMetricsMiddleware as expressMetricsMiddleware, Metrics_gauge as gauge, Metrics_histogram as histogram, Metrics_installEventLoopLagPoller as installEventLoopLagPoller, Metrics_installMemoryPoller as installMemoryPoller, Metrics_observableGauge as observableGauge, Metrics_reset as reset, Metrics_setup as setup };
+  export { Metrics_VERSION as VERSION, Metrics_counter as counter, Metrics_expressMetricsMiddleware as expressMetricsMiddleware, Metrics_flush as flush, Metrics_gauge as gauge, Metrics_histogram as histogram, Metrics_installCpuPoller as installCpuPoller, Metrics_installEventLoopLagPoller as installEventLoopLagPoller, Metrics_installMemoryPoller as installMemoryPoller, Metrics_observableGauge as observableGauge, Metrics_reset as reset, Metrics_setup as setup };
 }
 
 /**
@@ -427,6 +453,17 @@ declare const Tracelit: {
      * (Express, Mongoose, Redis, etc.).
      */
     readonly start: () => void;
+    /**
+     * Force-flush all pending telemetry (traces, logs, metrics) to Tracelit.
+     * Useful in serverless handlers, before `process.exit()` calls, or right
+     * after recording a critical error. Resolves once exporters report done.
+     */
+    readonly flush: () => Promise<void>;
+    /**
+     * Gracefully shut down all OpenTelemetry providers (flush + close exporters).
+     * Called automatically on SIGTERM/SIGINT — exposed for manual control.
+     */
+    readonly shutdown: () => Promise<void>;
     /**
      * An OpenTelemetry Tracer scoped to this service. Use for manual
      * instrumentation of custom operations.

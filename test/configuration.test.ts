@@ -142,16 +142,16 @@ describe("Configuration", () => {
       expect(() => c.validate()).toThrow(/apiKey is required/);
     });
 
-    it("throws when serviceName is undefined", () => {
+    it("does not throw when serviceName is undefined (falls back to defaults)", () => {
       const c = validConfig();
       c.serviceName = undefined;
-      expect(() => c.validate()).toThrow(/serviceName is required/);
+      expect(() => c.validate()).not.toThrow();
     });
 
-    it("throws when serviceName is an empty string", () => {
+    it("does not throw when serviceName is an empty string", () => {
       const c = validConfig();
       c.serviceName = "";
-      expect(() => c.validate()).toThrow(/serviceName is required/);
+      expect(() => c.validate()).not.toThrow();
     });
 
     it("throws when sampleRate is below 0.0", () => {

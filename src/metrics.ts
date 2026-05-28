@@ -14,7 +14,7 @@ import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
 import type { Resource } from "@opentelemetry/resources";
 import type { InstrumentOptions } from "./types";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 /** Internal state for the Metrics module — reset between test runs via reset(). */
 let meter: Meter | null = null;
@@ -77,6 +77,17 @@ export function reset(): void {
   if (provider) {
     provider.shutdown().catch(() => undefined);
     provider = null;
+  }
+}
+
+/**
+ * Force the MeterProvider to flush all pending metric data to the exporter.
+ * Called by the SDK's exit / crash handlers so metric snapshots survive
+ * process termination.
+ */
+export async function flush(): Promise<void> {
+  if (provider) {
+    await provider.forceFlush().catch(() => undefined);
   }
 }
 
