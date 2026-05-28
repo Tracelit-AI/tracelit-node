@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.3] - 2026-05-28
+
+### Fixed
+
+- **Critical: host applications no longer hang on uncaught exceptions.**
+  The crash handlers introduced in `0.2.0` awaited `flush()` before allowing
+  the exception to propagate, which could freeze the process for up to 30s
+  (the BatchSpanProcessor export timeout) on a slow or unreachable ingest
+  endpoint. Crash export is now fire-and-forget and never blocks the event
+  loop.
+- Stack traces from uncaught exceptions are now printed by Node exactly as
+  they would be in a vanilla app. Previously, registering an
+  `uncaughtException` handler suppressed Node's default crash output.
+
+### Changed
+
+- **`captureUncaughtExceptions` is now opt-in and defaults to `false`.**
+  In `0.2.0` we registered `uncaughtException` and `unhandledRejection`
+  handlers unconditionally, which changed Node's built-in crash behaviour
+  for every customer. The new default preserves vanilla Node semantics;
+  set `captureUncaughtExceptions: true` (or `TRACELIT_CAPTURE_UNCAUGHT_EXCEPTIONS=true`)
+  to opt back into capturing process-level crashes as spans.
+- When crash capture is enabled, the SDK now uses `process.prependListener`
+  so the host application's own handlers — and Node's default fatal-error
+  handler — continue to run exactly as they would without the SDK.
+- `SIGTERM`/`SIGINT` handlers no longer re-raise the signal. The host
+  application is responsible for exiting; the SDK only drains telemetry.
+
+### Added
+
+- Load-order detection: when `setup()` runs, the SDK now scans `require.cache`
+  for instrumented modules (`express`, `koa`, `fastify`, `pg`, `mysql2`,
+  `redis`, etc.) and prints a loud yellow warning if any are already loaded.
+  This is the #1 silent failure mode for Node.js OpenTelemetry — the warning
+  tells customers exactly how to fix it.
+
+[0.2.3]: https://github.com/Tracelit-AI/tracelit-node/compare/v0.2.2...v0.2.3
+
 ## [0.2.2] - 2026-05-28
 
 ### Changes

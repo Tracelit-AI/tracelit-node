@@ -23,7 +23,31 @@ import { ErrorSpanProcessor } from "./error-span-processor";
 import { installConsoleBridge } from "./logger-bridge";
 import * as Metrics from "./metrics";
 
-export const SDK_VERSION = "0.2.0";
+export const SDK_VERSION = "0.2.3";
+
+/**
+ * Modules that require auto-instrumentation hooks to be installed BEFORE
+ * they are loaded. If any of these are already in `require.cache` when
+ * `setup()` runs, OpenTelemetry cannot patch them and the corresponding
+ * spans (HTTP server, DB client, etc.) will silently never be produced.
+ */
+const HOT_INSTRUMENTED_MODULES = [
+  "express",
+  "express-winston",
+  "koa",
+  "fastify",
+  "@hapi/hapi",
+  "@nestjs/core",
+  "http",
+  "https",
+  "pg",
+  "mysql",
+  "mysql2",
+  "mongodb",
+  "redis",
+  "ioredis",
+  "@grpc/grpc-js",
+] as const;
 
 /** Internal setup state — reset via reset() for tests. */
 let configured = false;
@@ -54,6 +78,8 @@ export function setup(config: Configuration): void {
     return;
   }
 
+  warnIfLoadedLate();
+
   const serviceName = config.resolvedServiceName();
   const headers = config.exportHeaders();
   const resource = buildResource(config, serviceName);
@@ -76,9 +102,43 @@ export function setup(config: Configuration): void {
     );
   }
 
-  installExitHandlers();
+  installExitHandlers(config);
 
   configured = true;
+}
+
+/**
+ * Detects the very common pitfall where the SDK is required AFTER express
+ * (or other instrumented modules) and prints a loud warning. The user's
+ * tracing will be broken until they move the SDK require to the top of
+ * their entrypoint (or use `node -r`).
+ */
+function warnIfLoadedLate(): void {
+  const alreadyLoaded: string[] = [];
+  for (const mod of HOT_INSTRUMENTED_MODULES) {
+    try {
+      const resolved = require.resolve(mod);
+      if (require.cache[resolved]) alreadyLoaded.push(mod);
+    } catch {
+      // Module not installed — fine.
+    }
+  }
+  // Always skip 'http'/'https' from the warning because Node loads them
+  // implicitly for many built-ins; their presence isn't a reliable signal.
+  const externals = alreadyLoaded.filter((m) => m !== "http" && m !== "https");
+  if (externals.length === 0) return;
+
+  console.warn(
+    "\x1b[33m" +
+      "[Tracelit] ⚠️  SDK was loaded AFTER these modules: " +
+      externals.join(", ") +
+      "\n" +
+      "           HTTP server spans and DB client spans will NOT be captured.\n" +
+      "           Fix: move the Tracelit require/import to be the FIRST line of\n" +
+      "           your entrypoint, BEFORE any other require/import. Recommended:\n" +
+      "             node -r ./tracelit-init.js app.js" +
+      "\x1b[0m",
+  );
 }
 
 /** @internal — used in tests to reset state between runs. */
@@ -279,57 +339,67 @@ function setupLogs(
 }
 
 /**
- * Install process-level handlers so telemetry survives crashes and shutdowns:
+ * Install process-level handlers for graceful telemetry shutdown.
  *
- *   • `uncaughtException`   — record exception on a new span, flush, re-throw
- *   • `unhandledRejection`  — record exception on a new span, flush (process keeps running)
- *   • `SIGTERM` / `SIGINT`  — graceful shutdown: flush + close providers + exit
- *   • `beforeExit`          — last-chance flush for normal exits
+ * Always installed (safe — these only fire on intentional exits):
+ *   • `SIGTERM` / `SIGINT` — orchestrator (k8s, pm2, systemd) shutdown
+ *   • `beforeExit`         — normal event-loop drain, last-chance flush
  *
- * Without these, BatchSpanProcessor's in-memory queue is lost on crash and
- * the error span the user is debugging never reaches Tracelit.
+ * Opt-in via `config.captureUncaughtExceptions`:
+ *   • `uncaughtException`  — record the error as a span
+ *   • `unhandledRejection` — record the rejection as a span
+ *
+ * Important design notes:
+ *   - We NEVER block the event loop awaiting flush. The flush is fire-and-
+ *     forget, so an unreachable ingest endpoint can never freeze the host
+ *     application.
+ *   - We use `process.prependListener` so other listeners — including
+ *     Node's built-in default which prints the stack and exits — still run
+ *     exactly as they would without the SDK.
+ *   - We do NOT call setImmediate(throw) to "rethrow" the error after a
+ *     flush, because that delays the original stack trace by the flush
+ *     duration (up to BatchSpanProcessor's 30s timeout) and can mask the
+ *     real cause of the crash.
  */
-function installExitHandlers(): void {
+function installExitHandlers(config: Configuration): void {
   if (exitHandlersInstalled) return;
   exitHandlersInstalled = true;
 
-  const flushSync = (): void => {
-    // Best-effort: kick off the flush. Node's exit path waits for I/O briefly.
+  // `beforeExit` fires when the event loop empties — safe to flush here.
+  process.on("beforeExit", () => {
     void flush();
+  });
+
+  // SIGTERM/SIGINT — graceful shutdown path. We do NOT call process.exit or
+  // re-raise the signal because that would interfere with the host
+  // application's own signal handlers. The host is responsible for exiting;
+  // we just attempt to drain telemetry.
+  const handleSignal = () => {
+    void shutdown();
   };
+  process.once("SIGTERM", handleSignal);
+  process.once("SIGINT", handleSignal);
 
-  // `beforeExit` fires when the event loop empties — normal graceful exit path.
-  process.on("beforeExit", flushSync);
+  // Crash capture is opt-in. When OFF (default), Node's built-in behaviour
+  // is preserved: an uncaught exception prints the stack and exits with
+  // code 1 — exactly as in vanilla Node.
+  if (!config.captureUncaughtExceptions) return;
 
-  // SIGTERM/SIGINT — orchestrators (k8s, pm2, systemd) send these on shutdown.
-  const handleSignal = (sig: NodeJS.Signals) => {
-    void shutdown().finally(() => {
-      // Re-raise the signal so the process actually exits with the right code.
-      process.kill(process.pid, sig);
-    });
-  };
-  process.once("SIGTERM", () => handleSignal("SIGTERM"));
-  process.once("SIGINT", () => handleSignal("SIGINT"));
-
-  // Uncaught crashes — record on a span so the customer sees an incident.
-  // We DO NOT swallow the error: after flushing we re-throw so the runtime
-  // can still print the stack and exit with code 1 as it normally would.
-  process.on("uncaughtException", (err) => {
+  // `prependListener` runs BEFORE other listeners (including Node's
+  // default fatal-exception handler when no other listener exists). We
+  // record the span and return synchronously; the flush happens in the
+  // background and the original Node behaviour proceeds unmodified.
+  process.prependListener("uncaughtException", (err) => {
     try {
       recordCrashAsSpan(err, "uncaughtException");
     } catch {
-      // never crash the crash handler
+      // The crash handler must never crash. Swallow.
     }
-    void flush().finally(() => {
-      // Re-throw on next tick so the runtime prints + exits.
-      setImmediate(() => {
-        throw err;
-      });
-    });
+    // Fire-and-forget: do NOT await, do NOT delay the exception.
+    void flush();
   });
 
-  // Unhandled promise rejections — don't kill the process, just flush a span.
-  process.on("unhandledRejection", (reason) => {
+  process.prependListener("unhandledRejection", (reason) => {
     const err = reason instanceof Error ? reason : new Error(String(reason));
     try {
       recordCrashAsSpan(err, "unhandledRejection");

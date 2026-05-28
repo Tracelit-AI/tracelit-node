@@ -25,6 +25,7 @@ export class Configuration implements TraceLitConfig {
   sampleRate: number;
   enabled: boolean;
   resourceAttributes: Record<string, string>;
+  captureUncaughtExceptions: boolean;
 
   constructor() {
     this.apiKey = process.env["TRACELIT_API_KEY"];
@@ -34,6 +35,10 @@ export class Configuration implements TraceLitConfig {
     this.sampleRate = parseSampleRate(process.env["TRACELIT_SAMPLE_RATE"]);
     this.enabled = process.env["TRACELIT_ENABLED"] !== "false";
     this.resourceAttributes = {};
+    // Default OFF — registering these handlers overrides Node's built-in
+    // crash behaviour and can mask stack traces in development. Opt-in only.
+    this.captureUncaughtExceptions =
+      process.env["TRACELIT_CAPTURE_UNCAUGHT_EXCEPTIONS"] === "true";
   }
 
   /**

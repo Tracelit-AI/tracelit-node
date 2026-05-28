@@ -48,6 +48,23 @@ export interface TraceLitConfig {
    * as resource attributes.
    */
   resourceAttributes: Record<string, string>;
+
+  /**
+   * If true, the SDK installs `process.on('uncaughtException')` and
+   * `process.on('unhandledRejection')` handlers that record the error as a
+   * span before the process exits.
+   *
+   * **Off by default** because registering these handlers overrides Node's
+   * built-in crash behaviour (which prints the stack trace and exits with
+   * code 1). Enable only if you understand the trade-off.
+   *
+   * When enabled the SDK uses `process.prependListener` so other listeners
+   * — including Node's default if no other handler exists — still run, and
+   * the export is fired-and-forgotten so the process is never delayed.
+   *
+   * Env: TRACELIT_CAPTURE_UNCAUGHT_EXCEPTIONS. Default: false
+   */
+  captureUncaughtExceptions: boolean;
 }
 
 /** Options for creating a manual metric instrument. */
