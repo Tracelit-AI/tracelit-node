@@ -15,6 +15,7 @@ jest.mock("@opentelemetry/sdk-metrics", () => {
   const mockProvider = {
     getMeter: jest.fn(() => mockMeter),
     shutdown: jest.fn(() => Promise.resolve()),
+    forceFlush: jest.fn(() => Promise.resolve()),
   };
   return {
     MeterProvider: jest.fn(() => mockProvider),
@@ -46,6 +47,7 @@ const sdkMetrics = require("@opentelemetry/sdk-metrics") as {
   __mockProvider: {
     getMeter: jest.Mock;
     shutdown: jest.Mock;
+    forceFlush: jest.Mock;
   };
 };
 
@@ -332,5 +334,25 @@ describe("Metrics.expressMetricsMiddleware()", () => {
     expect(() =>
       middleware({ method: "GET", path: "/" } as never, res as never, next),
     ).not.toThrow();
+  });
+});
+
+describe("Metrics.flush()", () => {
+  it("resolves cleanly when the meter provider is not initialised", async () => {
+    await expect(Metrics.flush()).resolves.toBeUndefined();
+  });
+
+  it("calls forceFlush on the meter provider when initialised", async () => {
+    setupMetrics();
+    await Metrics.flush();
+    expect(sdkMetrics.__mockProvider.forceFlush).toHaveBeenCalled();
+  });
+
+  it("swallows provider errors so callers never see a rejected promise", async () => {
+    setupMetrics();
+    sdkMetrics.__mockProvider.forceFlush.mockImplementationOnce(() =>
+      Promise.reject(new Error("export failed")),
+    );
+    await expect(Metrics.flush()).resolves.toBeUndefined();
   });
 });

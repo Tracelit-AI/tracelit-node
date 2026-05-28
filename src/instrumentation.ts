@@ -86,6 +86,7 @@ export function reset(): void {
   configured = false;
   tracerProviderRef = null;
   loggerProviderRef = null;
+  exitHandlersInstalled = false;
   Metrics.reset();
 }
 

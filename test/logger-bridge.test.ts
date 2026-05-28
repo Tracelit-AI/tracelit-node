@@ -381,4 +381,30 @@ describe("createPinoDestination", () => {
     const line = JSON.stringify({ level: 30, msg: "crash" });
     await expect(writeToStream(dest, line + "\n")).resolves.toBeUndefined();
   });
+
+  it("serialises non-string non-null extra fields via JSON.stringify", async () => {
+    const dest = createPinoDestination(provider);
+    // Mix several types so we exercise the `safeStringify` path:
+    //   - number, boolean, nested object
+    // Also include null + undefined which should be skipped entirely.
+    const line = JSON.stringify({
+      level: 30,
+      msg: "req",
+      latencyMs: 42,
+      retried: true,
+      meta: { region: "eu-west-1" },
+      ignoredNull: null,
+    });
+
+    await writeToStream(dest, line + "\n");
+
+    const call = (emittedLogger.emit as jest.Mock).mock.calls[0][0] as {
+      attributes: Record<string, string>;
+    };
+    expect(call.attributes?.["latencyMs"]).toBe("42");
+    expect(call.attributes?.["retried"]).toBe("true");
+    expect(call.attributes?.["meta"]).toBe('{"region":"eu-west-1"}');
+    expect(call.attributes?.["ignoredNull"]).toBeUndefined();
+  });
+
 });

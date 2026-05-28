@@ -92,5 +92,31 @@ describe("ErrorAlwaysOnSampler", () => {
         expect(result.decision).toBe(SamplingDecision.RECORD_AND_SAMPLED);
       }
     });
+
+    it("preserves attributes and traceState when inner sampler returns NOT_RECORD with metadata", () => {
+      const sampler = new ErrorAlwaysOnSampler(0.0);
+      // Replace the inner sampler with a stub that returns a NOT_RECORD
+      // result containing attributes + traceState — this exercises the two
+      // optional-field copy branches in the upgrade path.
+      const fakeAttributes = { "custom.attr": "value" };
+      const fakeTraceState = {
+        get: () => undefined,
+        set: () => fakeTraceState,
+        unset: () => fakeTraceState,
+        serialize: () => "",
+      } as unknown as NonNullable<SamplingResult["traceState"]>;
+      (sampler as unknown as { inner: { shouldSample: () => SamplingResult } }).inner = {
+        shouldSample: () => ({
+          decision: SamplingDecision.NOT_RECORD,
+          attributes: fakeAttributes,
+          traceState: fakeTraceState,
+        }),
+      };
+
+      const result = callShouldSample(sampler);
+      expect(result.decision).toBe(SamplingDecision.RECORD);
+      expect(result.attributes).toBe(fakeAttributes);
+      expect(result.traceState).toBe(fakeTraceState);
+    });
   });
 });
