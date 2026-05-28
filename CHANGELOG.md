@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.2] - 2026-05-28
+
+### Changes
+
+- chore(release): bump version to 0.2.2 (0bf4b05)
+- test(sdk-node): cover new flush/shutdown + crash handlers to meet 80% coverage threshold (0990a5f)
+
+[0.2.2]: https://github.com/Tracelit-AI/tracelit-node/compare/v0.2.1...v0.2.2
+
 ## [0.2.0] - 2026-05-28
 
 ### Added
